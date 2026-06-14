@@ -219,51 +219,92 @@ function initAdminMatch(){
 }
 function initAdminAddPlayer(){
   if(!requireAdmin())return;
+
+  async function ensureSupabaseAdminSession(client){
+    const {data:{session}}=await client.auth.getSession();
+    if(session)return true;
+
+    const email=prompt('Enter your admin email for Supabase invite access');
+    if(!email)return false;
+    const password=prompt('Enter your Supabase admin password');
+    if(!password)return false;
+
+    const {error}=await client.auth.signInWithPassword({email,password});
+    if(error){
+      $('#addPlayerMsg').innerHTML=`<div class="notice"><b>Admin login failed</b><br>${error.message}</div>`;
+      return false;
+    }
+    return true;
+  }
+
   function draw(){adminStats()}
-  $('#addPlayerForm')?.addEventListener('submit',e=>{
+
+  $('#addPlayerForm')?.addEventListener('submit',async e=>{
     e.preventDefault();
-    const d=getData();
-    const name=clean($('#newName').value);
-    const email=clean($('#newEmail').value).toLowerCase();
-    const password=$('#newPassword').value;
-    const contact=clean($('#newContact').value);
-    const level=$('#newLevel').value;
-    const status=$('#newStatus').value;
-    if(!name||!email||!password)return;
 
-    let p=d.players.find(x=>
-      (x.email&&x.email.toLowerCase()===email) ||
-      (x.contact&&x.contact.toLowerCase()===email)
-    );
+    const msg=$('#addPlayerMsg');
+    const client=initSupabaseClient();
 
-    const alreadyActive=p?.licenseStatus==='active';
-    const licensesAvailable=licenseLeft(d)+(alreadyActive?1:0);
-
-    if(status==='active'&&licensesAvailable<=0){
-      $('#addPlayerMsg').innerHTML='<div class="notice"><b>You have ran out of licences</b><br>Ask the super admin to add more before activating another player</div>';
+    if(!client){
+      msg.innerHTML='<div class="notice">Supabase is not connected.</div>';
       return;
     }
 
-    if(p){
-      p.name=name;
-      p.email=email;
-      p.contact=contact||email;
-      p.password=password;
-      p.level=level;
-      p.licenseStatus=status;
-      p.lastSeen='Updated by admin';
-    }else{
-      p={id:'p'+Date.now(),clubId:CLUB_ID,name,email,contact:contact||email,password,level,licenseStatus:status,lastSeen:'Added by admin'};
-      d.players.push(p);
+    const full_name=clean($('#newName').value);
+    const email=clean($('#newEmail').value).toLowerCase();
+    const phone=clean($('#newContact').value);
+    const skill_level=$('#newLevel').value;
+    const license_status=$('#newStatus').value;
+
+    if(!full_name||!email){
+      msg.innerHTML='<div class="notice">Name and email are required.</div>';
+      return;
     }
 
-    setData(d);
-    $('#addPlayerForm').reset();
-    $('#addPlayerMsg').innerHTML=status==='active'
-      ? '<div class="notice">Player added and one licence has been used</div>'
-      : '<div class="notice">Player added to the club system</div>';
-    draw();
+    const loggedIn=await ensureSupabaseAdminSession(client);
+    if(!loggedIn)return;
+
+    msg.innerHTML='<div class="notice">Sending player invite...</div>';
+
+    try{
+      const {data,error}=await client.functions.invoke('invite-player',{
+        body:{
+          full_name,
+          email,
+          phone,
+          club:'Cue Point Bolton',
+          skill_level,
+          notes:`Licence status: ${license_status}`
+        }
+      });
+
+      if(error||data?.success===false){
+        throw new Error(error?.message||data?.error||'Unknown invite error');
+      }
+
+      const d=getData();
+      let p=d.players.find(x=>(x.email&&x.email.toLowerCase()===email)||(x.contact&&x.contact.toLowerCase()===email));
+      if(p){
+        p.name=full_name;
+        p.email=email;
+        p.contact=phone||email;
+        p.level=skill_level;
+        p.licenseStatus=license_status;
+        p.inviteStatus='sent';
+        p.lastSeen='Invite sent by admin';
+      }else{
+        d.players.push({id:'p'+Date.now(),clubId:CLUB_ID,name:full_name,email,contact:phone||email,level:skill_level,licenseStatus:license_status,inviteStatus:'sent',lastSeen:'Invite sent by admin'});
+      }
+      setData(d);
+
+      $('#addPlayerForm').reset();
+      msg.innerHTML='<div class="notice">Player added and invite sent.</div>';
+      draw();
+    }catch(err){
+      msg.innerHTML=`<div class="notice"><b>Invite failed</b><br>${err.message}</div>`;
+    }
   });
+
   live(draw);draw();
 }
 function initAdminMembers(){
